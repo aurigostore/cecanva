@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canva OTP Fetcher</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* bg-gray-900 */
+            background-image: 
+                radial-gradient(circle at 25px 25px, rgba(147, 112, 219, 0.2) 2%, transparent 0%), 
+                radial-gradient(circle at 75px 75px, rgba(59, 130, 246, 0.2) 2%, transparent 0%);
+            background-size: 100px 100px;
+        }
+        .btn {
+            transition: transform 0.1s ease, filter 0.2s ease;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            filter: brightness(1.1);
+        }
+        .btn:active {
+            transform: scale(0.98);
+        }
+        #progress-bar {
+            transition: width 1s linear;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
+
+        .otp-item-new {
+            background-color: rgba(59, 130, 246, 0.1);
+            border-left: 3px solid #3b82f6; /* blue-500 */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 flex items-center justify-center min-h-screen p-4">
+    <div class="w-full max-w-lg mx-auto bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl shadow-lg shadow-purple-500/10 p-8">
+        <div class="text-center mb-6">
+            <h1 class="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">Canva OTP Fetcher</h1>
+            <p class="text-gray-400 mt-2 text-sm">Masukkan email untuk mengambil OTP Canva</p>
+        </div>
+
+        <div class="space-y-4">
+            <input type="email" id="email-input" class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:ring-purple-500 focus:border-purple-500 transition duration-300" placeholder="Masukkan email lengkap...">
+            <button id="toggle-monitor-btn" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold py-3 px-4 rounded-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-purple-500 btn">Cek OTP</button>
+        </div>
+
+        <div id="status-container" class="text-center mt-4 h-5 text-sm text-gray-400"></div>
+        <div class="w-full bg-gray-700 rounded-full h-2 mt-2 overflow-hidden hidden" id="progress-container">
+            <div id="progress-bar" class="bg-gradient-to-r from-blue-500 to-purple-500 h-2 rounded-full" style="width: 100%"></div>
+        </div>
+
+        <div id="results-container" class="mt-4">
+            <!-- Hasil OTP akan muncul di sini -->
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const POLLING_INTERVAL = 2500;
+            const MONITORING_DURATION = 30000;
+            const API_BASE_URL = "https://mailgo.site/api/messages";
+
+            let pollingInterval, stopTimeout, usedMessageIds = {};
+            let synth;
+
+            const toggleBtn = document.getElementById('toggle-monitor-btn');
+            const emailInput = document.getElementById('email-input');
+            const resultsContainer = document.getElementById('results-container');
+            const statusContainer = document.getElementById('status-container');
+            const progressContainer = document.getElementById('progress-container');
+            const progressBar = document.getElementById('progress-bar');
+
+            const playNotificationSound = () => {
+                if (!synth) synth = new Tone.Synth().toDestination();
+                if (Tone.context.state !== 'running') { Tone.start(); }
+                synth.triggerAttackRelease("C5", "8n");
+            };
+            
+            function validateEmail(email) {
+                const re = /^(([^<>()[\]\\.,;:\s@"]+(\.[^<>()[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
+                return re.test(String(email).toLowerCase());
+            }
+
+            async function pollInbox(email) {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/${email}/aurigo`);
+                    if (!response.ok) { return; }
+                    const messages = await response.json();
+                    let foundNewOtpThisPoll = false;
+                    
+                    for (const msg of messages) {
+                        if (!msg || !msg.id || !msg.content) continue;
+                        const isFromCanva = msg.from?.toLowerCase().includes("canva") || msg.subject?.toLowerCase().includes("canva");
+                        const isNewMessage = !usedMessageIds[email] || !usedMessageIds[email].has(msg.id);
+
+                        if (isFromCanva && isNewMessage) {
+                            if (!usedMessageIds[email]) usedMessageIds[email] = new Set();
+                            usedMessageIds[email].add(msg.id);
+                            
+                            let otpMatches = msg.content.match(/\b\d{6}\b/g);
+                            let foundOtps = otpMatches ? [...new Set(otpMatches)].filter(otp => otp !== '000000') : [];
+                            
+                            if (foundOtps.length > 0) {
+                                displayResult(email, foundOtps, msg.subject);
+                                foundNewOtpThisPoll = true;
+                            }
+                        }
+                    }
+                    if (foundNewOtpThisPoll) { playNotificationSound(); }
+                } catch (error) { console.error(`[${email}] Error polling:`, error); }
+            }
+            
+            function startMonitoring() {
+                const email = emailInput.value.trim();
+                if (!validateEmail(email)) {
+                    showStatus("⚠️ Masukkan alamat email yang valid!", 'yellow', 3000);
+                    return;
+                }
+                
+                resultsContainer.innerHTML = '';
+                usedMessageIds = { [email]: new Set() };
+                
+                showStatus(`📡 Memantau ${email}...`, 'green');
+                pollInbox(email);
+                pollingInterval = setInterval(() => pollInbox(email), POLLING_INTERVAL);
+                
+                progressContainer.classList.remove('hidden');
+                progressBar.style.width = '100%';
+                progressBar.style.transition = 'none';
+                setTimeout(() => {
+                    progressBar.style.transition = `width ${MONITORING_DURATION / 1000}s linear`;
+                    progressBar.style.width = '0%';
+                }, 100);
+
+                stopTimeout = setTimeout(stopMonitoring, MONITORING_DURATION);
+
+                toggleBtn.textContent = 'Hentikan';
+                toggleBtn.classList.add('bg-yellow-600', 'hover:bg-yellow-700');
+                toggleBtn.classList.remove('bg-gradient-to-r', 'from-blue-500', 'to-purple-600');
+                emailInput.disabled = true;
+            }
+
+            function stopMonitoring() {
+                if (pollingInterval) clearInterval(pollingInterval);
+                if (stopTimeout) clearTimeout(stopTimeout);
+                pollingInterval = stopTimeout = null;
+                
+                if (resultsContainer.innerHTML.trim() === '') {
+                    showStatus("Pemantauan selesai. Tidak ada OTP ditemukan.", 'yellow', 5000);
+                } else {
+                    showStatus("⏹️ Pemantauan selesai.", 'gray', 5000);
+                }
+                
+                progressContainer.classList.add('hidden');
+                
+                toggleBtn.textContent = 'Cek OTP';
+                toggleBtn.classList.remove('bg-yellow-600', 'hover:bg-yellow-700');
+                toggleBtn.classList.add('bg-gradient-to-r', 'from-blue-500', 'to-purple-600');
+                emailInput.disabled = false;
+            }
+
+            function displayResult(email, otps, subject) {
+                const cardId = `card-${email.replace(/[@.]/g, '-')}`;
+                let card = document.getElementById(cardId);
+                
+                if (!card) {
+                    card = document.createElement('div');
+                    card.id = cardId;
+                    card.className = "p-4 mt-4 bg-gray-900/50 border border-gray-700 rounded-lg text-left animate-fade-in";
+                    card.innerHTML = `
+                        <div class="mb-3">
+                            <h3 class="font-semibold text-gray-400 text-sm">Subject:</h3>
+                            <p class="email-subject p-2 bg-gray-800 rounded mt-1 text-gray-200 text-sm truncate"></p>
+                        </div>
+                        <div>
+                            <h3 class="font-semibold text-gray-400 text-sm">OTP Ditemukan:</h3>
+                            <div class="otp-list mt-1 space-y-2"></div>
+                        </div>`;
+                    resultsContainer.prepend(card);
+                }
+
+                card.querySelector('.email-subject').textContent = subject;
+                const otpList = card.querySelector('.otp-list');
+                
+                otps.forEach(otp => {
+                    if (otpList.querySelector(`[data-otp='${otp}']`)) return;
+
+                    const oldNewest = otpList.querySelector('.otp-item-new');
+                    if (oldNewest) {
+                        oldNewest.classList.remove('otp-item-new');
+                        const oldBadge = oldNewest.querySelector('.new-badge');
+                        if (oldBadge) oldBadge.remove();
+                    }
+
+                    const otpItem = document.createElement('div');
+                    otpItem.dataset.otp = otp;
+                    otpItem.className = "flex items-center justify-between p-2 bg-gray-800 rounded otp-item-new transition-all duration-300";
+                    otpItem.innerHTML = `
+                        <div class="flex items-center space-x-3">
+                            <span class="font-mono text-xl text-transparent bg-clip-text bg-gradient-to-r from-green-300 to-blue-400">${otp}</span>
+                            <span class="new-badge bg-blue-500 text-white font-semibold rounded-full px-2 py-0.5 text-xs">Terbaru</span>
+                        </div>
+                        <button class="copy-otp-btn p-2 bg-gray-700 rounded-lg hover:bg-gray-600 transition" title="Salin OTP">
+                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        </button>`;
+                    otpList.prepend(otpItem);
+                });
+            }
+
+            function showStatus(message, color, duration = 0) {
+                const colorClasses = { green: 'text-green-400', yellow: 'text-yellow-400', red: 'text-red-400', gray: 'text-gray-400' };
+                statusContainer.textContent = message;
+                statusContainer.className = `text-center mt-4 h-5 text-sm ${colorClasses[color] || 'text-gray-400'}`;
+                if (duration > 0) {
+                    setTimeout(() => { if (statusContainer.textContent === message) statusContainer.textContent = ''; }, duration);
+                }
+            }
+
+            function copyToClipboard(text, successCallback) {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.top = '-9999px';
+                textArea.style.left = '-9999px';
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    if(successCallback) successCallback();
+                } catch (err) {
+                    console.error('Gagal menyalin ke clipboard', err);
+                    showStatus(" Gagal menyalin!", 'red', 3000);
+                } finally { document.body.removeChild(textArea); }
+            }
+
+            // --- Event Listeners ---
+            toggleBtn.addEventListener('click', () => {
+                if (pollingInterval) stopMonitoring(); else startMonitoring();
+            });
+
+            resultsContainer.addEventListener('click', (event) => {
+                const button = event.target.closest('.copy-otp-btn');
+                if (button) {
+                    const otp = button.parentElement.querySelector('.font-mono').textContent;
+                    copyToClipboard(otp, () => {
+                        const originalSvg = button.innerHTML;
+                        button.innerHTML = `<svg class="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`;
+                        setTimeout(() => { button.innerHTML = originalSvg; }, 2000);
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
+
